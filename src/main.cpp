@@ -18,6 +18,16 @@ std::vector<float> make_input() {
     return input;
 }
 
+std::vector<float> exp_reference(const std::vector<float>& input) {
+    std::vector<float> output(input.size());
+
+    for (size_t i = 0; i < input.size(); ++i) {
+        output[i] = std::exp(input[i]);
+    }
+
+    return output;
+}
+
 std::vector<float> softmax_reference(const std::vector<float>& input) {
     std::vector<float> output(input.size());
 
@@ -47,7 +57,7 @@ std::vector<float> softmax_reference(const std::vector<float>& input) {
 int main() {
 
     auto input = make_input();
-    auto golden = softmax_reference(input);
+    auto golden = exp_reference(input);
 
     std::cout << "input" << std::endl;
     for (size_t i = 0; i < 10; ++i) {
