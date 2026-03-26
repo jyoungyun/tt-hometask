@@ -1,0 +1,12 @@
+#!/bin/bash
+
+SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TTSIM_DIR="${SOURCE_ROOT}/ttsim"
+
+export TT_METAL_HOME="${SOURCE_ROOT}"
+export TT_METAL_SIMULATOR="${TTSIM_DIR}/libttsim_wh.so"
+export TT_METAL_SLOW_DISPATCH_MODE=1
+
+echo "  TT_METAL_HOME=${TT_METAL_HOME}"
+echo "  TT_METAL_SIMULATOR=${TT_METAL_SIMULATOR}"
+echo "  TT_METAL_SLOW_DISPATCH_MODE=${TT_METAL_SLOW_DISPATCH_MODE}"
