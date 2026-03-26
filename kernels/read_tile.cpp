@@ -31,12 +31,12 @@ void kernel_main() {
         // First make sure there is space in the circular buffers to be written to.
         cb_reserve_back(cb_in0, 1);
         uint32_t cb_in0_addr = get_write_ptr(cb_in0);
-        noc_async_read_tile(i, in0, cb_in0_addr);  // read the tile into the circular buffer
-                                                   // We can overlap async reads and writes
-                                                   // to reduce the data movement overhead.
+        noc_async_read_tile(i, in0, cb_in0_addr); // read the tile into the circular buffer
+                                                  // We can overlap async reads and writes
+                                                  // to reduce the data movement overhead.
 
-        noc_async_read_barrier();  // Wait until tile reads are done
-        cb_push_back(cb_in0, 1);   // mark the tiles as ready. From this point forward kernels
-                                   // calling `cb_wait_front` will see this tile
+        noc_async_read_barrier(); // Wait until tile reads are done
+        cb_push_back(cb_in0, 1);  // mark the tiles as ready. From this point forward kernels
+                                  // calling `cb_wait_front` will see this tile
     }
 }

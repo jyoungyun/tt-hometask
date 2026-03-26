@@ -1,15 +1,15 @@
-#include <vector>
-#include <cmath>
-#include <random>
-#include <cstddef>
 #include <algorithm>
-#include <iostream>
+#include <cmath>
+#include <cstddef>
 #include <iomanip>
+#include <iostream>
+#include <random>
+#include <vector>
 
-#include <tt-metalium/host_api.hpp>
+#include <tt-metalium/bfloat16.hpp>
 #include <tt-metalium/device.hpp>
 #include <tt-metalium/distributed.hpp>
-#include <tt-metalium/bfloat16.hpp>
+#include <tt-metalium/host_api.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 
 using namespace tt;
@@ -23,13 +23,13 @@ std::vector<bfloat16> make_input() {
     std::mt19937 rng(std::random_device{}());
     std::uniform_real_distribution<float> dist(0.f, 1.f);
     std::vector<bfloat16> input(kRows * kCols);
-    for (bfloat16& v : input) {
+    for (bfloat16 &v : input) {
         v = bfloat16(dist(rng));
     }
     return input;
 }
 
-std::vector<bfloat16> exp_reference(const std::vector<bfloat16>& input) {
+std::vector<bfloat16> exp_reference(const std::vector<bfloat16> &input) {
     std::vector<bfloat16> output(input.size());
     for (size_t i = 0; i < input.size(); ++i) {
         output[i] = bfloat16(std::exp(static_cast<float>(input[i])));
@@ -37,7 +37,7 @@ std::vector<bfloat16> exp_reference(const std::vector<bfloat16>& input) {
     return output;
 }
 
-std::vector<bfloat16> softmax_reference(const std::vector<bfloat16>& input) {
+std::vector<bfloat16> softmax_reference(const std::vector<bfloat16> &input) {
     std::vector<float> foutput(input.size());
     std::vector<bfloat16> output(input.size());
 
@@ -46,12 +46,12 @@ std::vector<bfloat16> softmax_reference(const std::vector<bfloat16>& input) {
 
         float max_val = static_cast<float>(input[base]);
         for (size_t col = 1; col < kCols; ++col) {
-            max_val = std::max(max_val, static_cast<float>(input[base+col]));
+            max_val = std::max(max_val, static_cast<float>(input[base + col]));
         }
 
         float sum = 0.f;
         for (size_t col = 0; col < kCols; ++col) {
-            float e = std::exp(static_cast<float>(input[base+col]) - max_val);
+            float e = std::exp(static_cast<float>(input[base + col]) - max_val);
             foutput[base + col] = e;
             sum += e;
         }
@@ -64,7 +64,7 @@ std::vector<bfloat16> softmax_reference(const std::vector<bfloat16>& input) {
     return output;
 }
 
-float max_abs_error(const std::vector<bfloat16>& a, const std::vector<bfloat16>& b) {
+float max_abs_error(const std::vector<bfloat16> &a, const std::vector<bfloat16> &b) {
     if (a.size() != b.size()) {
         throw std::runtime_error("Size Mismatch!");
     }
@@ -81,110 +81,94 @@ float max_abs_error(const std::vector<bfloat16>& a, const std::vector<bfloat16>&
 int main() {
     // create mesh device and command queue
     auto mesh_device = distributed::MeshDevice::create_unit_mesh(0);
-    auto& cq = mesh_device->mesh_command_queue();
+    auto &cq = mesh_device->mesh_command_queue();
 
     // create workload
     distributed::MeshWorkload workload;
-    distributed::MeshCoordinateRange device_range = distributed::MeshCoordinateRange(mesh_device->shape());
+    distributed::MeshCoordinateRange device_range =
+        distributed::MeshCoordinateRange(mesh_device->shape());
 
     // create program
     Program program = CreateProgram();
 
-    constexpr CoreCoord core = {0,0};
+    constexpr CoreCoord core = {0, 0};
     // TODO: dual core
     const uint32_t n_tiles = 1;
     const uint32_t tile_size_bytes = sizeof(bfloat16) * kRows * 32;
 
     // create dram buffer
-    distributed::DeviceLocalBufferConfig dram_config{
-        .page_size = tile_size_bytes,
-        .buffer_type = tt::tt_metal::BufferType::DRAM
-    };
-    distributed::ReplicatedBufferConfig buffer_config{
-        .size = n_tiles * tile_size_bytes
-    };
-    auto src0_dram_buffer = distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
-    auto dst_dram_buffer = distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
+    distributed::DeviceLocalBufferConfig dram_config{.page_size = tile_size_bytes,
+                                                     .buffer_type = tt::tt_metal::BufferType::DRAM};
+    distributed::ReplicatedBufferConfig buffer_config{.size = n_tiles * tile_size_bytes};
+    auto src0_dram_buffer =
+        distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
+    auto dst_dram_buffer =
+        distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
 
     // create circular buffers
     constexpr auto cb_data_format = tt::DataFormat::Float16_b;
     constexpr uint32_t src0_cb_index = CBIndex::c_0;
-    CircularBufferConfig cb_src0_config = CircularBufferConfig(
-            n_tiles * tile_size_bytes,
-            {{src0_cb_index, cb_data_format}})
+    CircularBufferConfig cb_src0_config =
+        CircularBufferConfig(n_tiles * tile_size_bytes, {{src0_cb_index, cb_data_format}})
             .set_page_size(src0_cb_index, tile_size_bytes);
     auto cb_src = CreateCircularBuffer(program, core, cb_src0_config);
 
-// c_1: MAX reduce scaler (1.0f)
-constexpr uint32_t c1_cb_index = CBIndex::c_1;
-CircularBufferConfig cb_c1_config = CircularBufferConfig(
-        tile_size_bytes,
-        {{c1_cb_index, cb_data_format}})
-        .set_page_size(c1_cb_index, tile_size_bytes);
-auto cb_c1 = CreateCircularBuffer(program, core, cb_c1_config);
+    // c_1: MAX reduce scaler (1.0f)
+    constexpr uint32_t c1_cb_index = CBIndex::c_1;
+    CircularBufferConfig cb_c1_config =
+        CircularBufferConfig(tile_size_bytes, {{c1_cb_index, cb_data_format}})
+            .set_page_size(c1_cb_index, tile_size_bytes);
+    auto cb_c1 = CreateCircularBuffer(program, core, cb_c1_config);
 
-// c_2: SUM reduce scaler (1.0f)
-constexpr uint32_t c2_cb_index = CBIndex::c_2;
-CircularBufferConfig cb_c2_config = CircularBufferConfig(
-        tile_size_bytes,
-        {{c2_cb_index, cb_data_format}})
-        .set_page_size(c2_cb_index, tile_size_bytes);
-auto cb_c2 = CreateCircularBuffer(program, core, cb_c2_config);
+    // c_2: SUM reduce scaler (1.0f)
+    constexpr uint32_t c2_cb_index = CBIndex::c_2;
+    CircularBufferConfig cb_c2_config =
+        CircularBufferConfig(tile_size_bytes, {{c2_cb_index, cb_data_format}})
+            .set_page_size(c2_cb_index, tile_size_bytes);
+    auto cb_c2 = CreateCircularBuffer(program, core, cb_c2_config);
 
-// c_3: MAX result / SUM result
-constexpr uint32_t c3_cb_index = CBIndex::c_3;
-CircularBufferConfig cb_c3_config = CircularBufferConfig(
-        tile_size_bytes,
-        {{c3_cb_index, cb_data_format}})
-        .set_page_size(c3_cb_index, tile_size_bytes);
-auto cb_c3 = CreateCircularBuffer(program, core, cb_c3_config);
+    // c_3: MAX result / SUM result
+    constexpr uint32_t c3_cb_index = CBIndex::c_3;
+    CircularBufferConfig cb_c3_config =
+        CircularBufferConfig(tile_size_bytes, {{c3_cb_index, cb_data_format}})
+            .set_page_size(c3_cb_index, tile_size_bytes);
+    auto cb_c3 = CreateCircularBuffer(program, core, cb_c3_config);
 
-// c_4: exp result
-constexpr uint32_t c4_cb_index = CBIndex::c_4;
-CircularBufferConfig cb_c4_config = CircularBufferConfig(
-        tile_size_bytes,
-        {{c4_cb_index, cb_data_format}})
-        .set_page_size(c4_cb_index, tile_size_bytes);
-auto cb_c4 = CreateCircularBuffer(program, core, cb_c4_config);
+    // c_4: exp result
+    constexpr uint32_t c4_cb_index = CBIndex::c_4;
+    CircularBufferConfig cb_c4_config =
+        CircularBufferConfig(tile_size_bytes, {{c4_cb_index, cb_data_format}})
+            .set_page_size(c4_cb_index, tile_size_bytes);
+    auto cb_c4 = CreateCircularBuffer(program, core, cb_c4_config);
 
     constexpr uint32_t dst_cb_index = CBIndex::c_16;
-    CircularBufferConfig cb_dst_config = CircularBufferConfig(
-            n_tiles * tile_size_bytes,
-            {{dst_cb_index, cb_data_format}})
+    CircularBufferConfig cb_dst_config =
+        CircularBufferConfig(n_tiles * tile_size_bytes, {{dst_cb_index, cb_data_format}})
             .set_page_size(dst_cb_index, tile_size_bytes);
     auto cb_dst = CreateCircularBuffer(program, core, cb_dst_config);
 
     // create kernel
     std::vector<uint32_t> reader_compile_time_args;
     TensorAccessorArgs(*src0_dram_buffer).append_to(reader_compile_time_args);
-    KernelHandle unary_reader_kernel_id = CreateKernel(
-            program,
-            "kernels/read_tile.cpp",
-            core,
-            DataMovementConfig{
-                .processor = DataMovementProcessor::RISCV_1,
-                .noc = NOC::RISCV_1_default,
-                .compile_args = reader_compile_time_args});
+    KernelHandle unary_reader_kernel_id =
+        CreateKernel(program, "kernels/read_tile.cpp", core,
+                     DataMovementConfig{.processor = DataMovementProcessor::RISCV_1,
+                                        .noc = NOC::RISCV_1_default,
+                                        .compile_args = reader_compile_time_args});
 
     std::vector<uint32_t> writer_compile_time_args;
     TensorAccessorArgs(*dst_dram_buffer).append_to(writer_compile_time_args);
-    KernelHandle unary_writer_kernel_id = CreateKernel(
-            program,
-            "kernels/write_tile.cpp",
-            core,
-            DataMovementConfig{
-                .processor = DataMovementProcessor::RISCV_0,
-                .noc = NOC::RISCV_0_default,
-                .compile_args = writer_compile_time_args});
+    KernelHandle unary_writer_kernel_id =
+        CreateKernel(program, "kernels/write_tile.cpp", core,
+                     DataMovementConfig{.processor = DataMovementProcessor::RISCV_0,
+                                        .noc = NOC::RISCV_0_default,
+                                        .compile_args = writer_compile_time_args});
 
-    KernelHandle eltwise_sfpu_kernel_id = CreateKernel(
-            program,
-            "kernels/eltwise_sfpu.cpp",
-            core,
-            ComputeConfig{
-                .math_fidelity = MathFidelity::HiFi4,
-                .math_approx_mode = false,
-            });
+    KernelHandle eltwise_sfpu_kernel_id = CreateKernel(program, "kernels/eltwise_sfpu.cpp", core,
+                                                       ComputeConfig{
+                                                           .math_fidelity = MathFidelity::HiFi4,
+                                                           .math_approx_mode = false,
+                                                       });
 
     // initialize input data and golden data
     auto input = make_input();
@@ -212,4 +196,3 @@ auto cb_c4 = CreateCircularBuffer(program, core, cb_c4_config);
 
     return 0;
 }
-
