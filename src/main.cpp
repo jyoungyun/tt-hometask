@@ -15,9 +15,13 @@
 using namespace tt;
 using namespace tt::tt_metal;
 
+constexpr uint32_t kCore = 2;
+constexpr uint32_t kTile = 32 * 32;
 constexpr uint32_t kRows = 32;
-// TODO: kCols = 1024
-constexpr uint32_t kCols = 32;
+constexpr uint32_t kCols = 1024;
+static_assert(((kRows * kCols) % 1024) == 0);
+constexpr uint32_t n_tiles = kRows * kCols / kTile;
+constexpr uint32_t tiles_per_core = n_tiles / kCore;
 
 std::vector<bfloat16> make_input() {
     std::mt19937 rng(std::random_device{}());
@@ -38,40 +42,40 @@ std::vector<bfloat16> exp_reference(const std::vector<bfloat16> &input) {
 }
 
 std::vector<bfloat16> softmax_reference(const std::vector<bfloat16> &input) {
-    std::vector<float> foutput(input.size());
+    if (input.size() != kRows * kCols) {
+        throw std::runtime_error("input size mismatch");
+    }
+
     std::vector<bfloat16> output(input.size());
 
     for (size_t row = 0; row < kRows; ++row) {
-        int base = row * kCols;
+        const size_t row_base = row * kCols;
 
-        float max_val = static_cast<float>(input[base]);
+        float max_val = static_cast<float>(input[row_base]);
         for (size_t col = 1; col < kCols; ++col) {
-            max_val = std::max(max_val, static_cast<float>(input[base + col]));
+            max_val = std::max(max_val, static_cast<float>(input[row_base + col]));
         }
 
-        float sum = 0.f;
+        std::vector<float> exp_vals(kCols);
+        float sum = 0.0f;
         for (size_t col = 0; col < kCols; ++col) {
-            float e = std::exp(static_cast<float>(input[base + col]) - max_val);
-            foutput[base + col] = e;
+            float e = std::exp(static_cast<float>(input[row_base + col]) - max_val);
+            exp_vals[col] = e;
             sum += e;
         }
 
         for (size_t col = 0; col < kCols; ++col) {
-            output[base + col] = bfloat16(foutput[base + col] / sum);
+            output[row_base + col] = bfloat16(exp_vals[col] / sum);
         }
     }
 
     return output;
 }
 
-float max_abs_error(const std::vector<bfloat16> &a, const std::vector<bfloat16> &b) {
-    if (a.size() != b.size()) {
-        throw std::runtime_error("Size Mismatch!");
-    }
-
+float max_abs_error(const std::vector<bfloat16> &a, const std::vector<bfloat16> &b, int core) {
     float max_err = 0.f;
     for (size_t i = 0; i < a.size(); ++i) {
-        float av = static_cast<float>(a[i]);
+        float av = static_cast<float>(a[core * tiles_per_core + i]);
         float bv = static_cast<float>(b[i]);
         max_err = std::max(max_err, std::abs(av - bv));
     }
@@ -91,8 +95,7 @@ int main() {
     // create program
     Program program = CreateProgram();
 
-    constexpr CoreCoord core = {0, 0};
-    // TODO: dual core
+    CoreRange core_range({0, 0}, {1, 0});
     const uint32_t n_tiles = 1;
     const uint32_t tile_size_bytes = sizeof(bfloat16) * kRows * 32;
 
@@ -111,47 +114,47 @@ int main() {
     CircularBufferConfig cb_src0_config =
         CircularBufferConfig(n_tiles * tile_size_bytes, {{src0_cb_index, cb_data_format}})
             .set_page_size(src0_cb_index, tile_size_bytes);
-    auto cb_src = CreateCircularBuffer(program, core, cb_src0_config);
+    auto cb_src = CreateCircularBuffer(program, core_range, cb_src0_config);
 
     // c_1: MAX reduce scaler (1.0f)
     constexpr uint32_t c1_cb_index = CBIndex::c_1;
     CircularBufferConfig cb_c1_config =
         CircularBufferConfig(tile_size_bytes, {{c1_cb_index, cb_data_format}})
             .set_page_size(c1_cb_index, tile_size_bytes);
-    auto cb_c1 = CreateCircularBuffer(program, core, cb_c1_config);
+    auto cb_c1 = CreateCircularBuffer(program, core_range, cb_c1_config);
 
     // c_2: SUM reduce scaler (1.0f)
     constexpr uint32_t c2_cb_index = CBIndex::c_2;
     CircularBufferConfig cb_c2_config =
         CircularBufferConfig(tile_size_bytes, {{c2_cb_index, cb_data_format}})
             .set_page_size(c2_cb_index, tile_size_bytes);
-    auto cb_c2 = CreateCircularBuffer(program, core, cb_c2_config);
+    auto cb_c2 = CreateCircularBuffer(program, core_range, cb_c2_config);
 
     // c_3: MAX result / SUM result
     constexpr uint32_t c3_cb_index = CBIndex::c_3;
     CircularBufferConfig cb_c3_config =
         CircularBufferConfig(tile_size_bytes, {{c3_cb_index, cb_data_format}})
             .set_page_size(c3_cb_index, tile_size_bytes);
-    auto cb_c3 = CreateCircularBuffer(program, core, cb_c3_config);
+    auto cb_c3 = CreateCircularBuffer(program, core_range, cb_c3_config);
 
     // c_4: exp result
     constexpr uint32_t c4_cb_index = CBIndex::c_4;
     CircularBufferConfig cb_c4_config =
         CircularBufferConfig(tile_size_bytes, {{c4_cb_index, cb_data_format}})
             .set_page_size(c4_cb_index, tile_size_bytes);
-    auto cb_c4 = CreateCircularBuffer(program, core, cb_c4_config);
+    auto cb_c4 = CreateCircularBuffer(program, core_range, cb_c4_config);
 
     constexpr uint32_t dst_cb_index = CBIndex::c_16;
     CircularBufferConfig cb_dst_config =
         CircularBufferConfig(n_tiles * tile_size_bytes, {{dst_cb_index, cb_data_format}})
             .set_page_size(dst_cb_index, tile_size_bytes);
-    auto cb_dst = CreateCircularBuffer(program, core, cb_dst_config);
+    auto cb_dst = CreateCircularBuffer(program, core_range, cb_dst_config);
 
     // create kernel
     std::vector<uint32_t> reader_compile_time_args;
     TensorAccessorArgs(*src0_dram_buffer).append_to(reader_compile_time_args);
     KernelHandle unary_reader_kernel_id =
-        CreateKernel(program, "kernels/read_tile.cpp", core,
+        CreateKernel(program, "kernels/read_tile.cpp", core_range,
                      DataMovementConfig{.processor = DataMovementProcessor::RISCV_1,
                                         .noc = NOC::RISCV_1_default,
                                         .compile_args = reader_compile_time_args});
@@ -159,16 +162,17 @@ int main() {
     std::vector<uint32_t> writer_compile_time_args;
     TensorAccessorArgs(*dst_dram_buffer).append_to(writer_compile_time_args);
     KernelHandle unary_writer_kernel_id =
-        CreateKernel(program, "kernels/write_tile.cpp", core,
+        CreateKernel(program, "kernels/write_tile.cpp", core_range,
                      DataMovementConfig{.processor = DataMovementProcessor::RISCV_0,
                                         .noc = NOC::RISCV_0_default,
                                         .compile_args = writer_compile_time_args});
 
-    KernelHandle eltwise_sfpu_kernel_id = CreateKernel(program, "kernels/eltwise_sfpu.cpp", core,
-                                                       ComputeConfig{
-                                                           .math_fidelity = MathFidelity::HiFi4,
-                                                           .math_approx_mode = false,
-                                                       });
+    KernelHandle eltwise_sfpu_kernel_id =
+        CreateKernel(program, "kernels/eltwise_sfpu.cpp", core_range,
+                     ComputeConfig{
+                         .math_fidelity = MathFidelity::HiFi4,
+                         .math_approx_mode = false,
+                     });
 
     // initialize input data and golden data
     auto input = make_input();
@@ -178,9 +182,18 @@ int main() {
     distributed::EnqueueWriteMeshBuffer(cq, src0_dram_buffer, input, false);
 
     // set up the runtime arguments
-    SetRuntimeArgs(program, eltwise_sfpu_kernel_id, core, {n_tiles});
-    SetRuntimeArgs(program, unary_reader_kernel_id, core, {src0_dram_buffer->address(), n_tiles});
-    SetRuntimeArgs(program, unary_writer_kernel_id, core, {dst_dram_buffer->address(), n_tiles});
+    CoreCoord core0 = {0, 0};
+    CoreCoord core1 = {1, 0};
+    SetRuntimeArgs(program, eltwise_sfpu_kernel_id, core0, {tiles_per_core});
+    SetRuntimeArgs(program, eltwise_sfpu_kernel_id, core1, {tiles_per_core});
+    SetRuntimeArgs(program, unary_reader_kernel_id, core0,
+                   {src0_dram_buffer->address(), 0, tiles_per_core});
+    SetRuntimeArgs(program, unary_reader_kernel_id, core1,
+                   {src0_dram_buffer->address(), tiles_per_core, tiles_per_core});
+    SetRuntimeArgs(program, unary_writer_kernel_id, core0,
+                   {dst_dram_buffer->address(), 0, tiles_per_core});
+    SetRuntimeArgs(program, unary_writer_kernel_id, core1,
+                   {dst_dram_buffer->address(), tiles_per_core, tiles_per_core});
 
     // launch
     workload.add_program(device_range, std::move(program));
@@ -191,7 +204,13 @@ int main() {
     std::vector<bfloat16> output(input.size());
     distributed::EnqueueReadMeshBuffer(cq, output, dst_dram_buffer, true);
 
-    float err = max_abs_error(output, golden);
+    // TODO: consider core
+    for (size_t i = 0; i < 10; ++i) {
+        std::cout << "golden[" << i << "] = " << static_cast<float>(golden[i]) << ", output[" << i
+                  << "] = " << static_cast<float>(output[i]) << std::endl;
+    }
+
+    float err = max_abs_error(golden, output, 1);
     std::cout << "Max ABS error: " << err << std::endl;
 
     return 0;

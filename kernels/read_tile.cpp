@@ -7,7 +7,8 @@
 void kernel_main() {
     // Read parameters from the kernel arguments
     uint32_t in0_addr = get_arg_val<uint32_t>(0);
-    uint32_t n_tiles = get_arg_val<uint32_t>(1);
+    uint32_t start_tile = get_arg_val<uint32_t>(1);
+    uint32_t n_tiles = get_arg_val<uint32_t>(2);
 
     // The circular buffers to read the tiles into
     constexpr uint32_t cb_in0 = tt::CBIndex::c_0;
@@ -28,12 +29,13 @@ void kernel_main() {
 
     // Loop over all the tiles and read them into the circular buffers
     for (uint32_t i = 0; i < n_tiles; i++) {
+        uint32_t tile_id = start_tile + i;
         // First make sure there is space in the circular buffers to be written to.
         cb_reserve_back(cb_in0, 1);
         uint32_t cb_in0_addr = get_write_ptr(cb_in0);
-        noc_async_read_tile(i, in0, cb_in0_addr); // read the tile into the circular buffer
-                                                  // We can overlap async reads and writes
-                                                  // to reduce the data movement overhead.
+        noc_async_read_tile(tile_id, in0, cb_in0_addr); // read the tile into the circular buffer
+                                                        // We can overlap async reads and writes
+                                                        // to reduce the data movement overhead.
 
         noc_async_read_barrier(); // Wait until tile reads are done
         cb_push_back(cb_in0, 1);  // mark the tiles as ready. From this point forward kernels
