@@ -100,18 +100,10 @@ int main() {
         .page_size = tile_size_bytes,
         .buffer_type = tt::tt_metal::BufferType::DRAM
     };
-    distributed::ReplicatedBufferConfig max_buffer_config{
-        .size = n_tiles * tile_size_bytes
-    };
-    distributed::ReplicatedBufferConfig sum_buffer_config{
-        .size = n_tiles * tile_size_bytes
-    };
     distributed::ReplicatedBufferConfig buffer_config{
         .size = n_tiles * tile_size_bytes
     };
     auto src0_dram_buffer = distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
-    auto max_dram_buffer = distributed::MeshBuffer::create(max_buffer_config, dram_config, mesh_device.get());
-    auto sum_dram_buffer = distributed::MeshBuffer::create(sum_buffer_config, dram_config, mesh_device.get());
     auto dst_dram_buffer = distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
 
     // create circular buffers
@@ -123,19 +115,37 @@ int main() {
             .set_page_size(src0_cb_index, tile_size_bytes);
     auto cb_src = CreateCircularBuffer(program, core, cb_src0_config);
 
-    constexpr uint32_t max_cb_index = CBIndex::c_1;
-    CircularBufferConfig cb_max_config = CircularBufferConfig(
-            n_tiles * tile_size_bytes,
-            {{max_cb_index, cb_data_format}})
-            .set_page_size(max_cb_index, tile_size_bytes);
-    auto cb_max = CreateCircularBuffer(program, core, cb_max_config);
+// c_1: MAX reduce scaler (1.0f)
+constexpr uint32_t c1_cb_index = CBIndex::c_1;
+CircularBufferConfig cb_c1_config = CircularBufferConfig(
+        tile_size_bytes,
+        {{c1_cb_index, cb_data_format}})
+        .set_page_size(c1_cb_index, tile_size_bytes);
+auto cb_c1 = CreateCircularBuffer(program, core, cb_c1_config);
 
-    constexpr uint32_t sum_cb_index = CBIndex::c_2;
-    CircularBufferConfig cb_sum_config = CircularBufferConfig(
-            n_tiles * tile_size_bytes,
-            {{sum_cb_index, cb_data_format}})
-            .set_page_size(sum_cb_index, tile_size_bytes);
-    auto cb_sum = CreateCircularBuffer(program, core, cb_sum_config);
+// c_2: SUM reduce scaler (1.0f)
+constexpr uint32_t c2_cb_index = CBIndex::c_2;
+CircularBufferConfig cb_c2_config = CircularBufferConfig(
+        tile_size_bytes,
+        {{c2_cb_index, cb_data_format}})
+        .set_page_size(c2_cb_index, tile_size_bytes);
+auto cb_c2 = CreateCircularBuffer(program, core, cb_c2_config);
+
+// c_3: MAX result / SUM result
+constexpr uint32_t c3_cb_index = CBIndex::c_3;
+CircularBufferConfig cb_c3_config = CircularBufferConfig(
+        tile_size_bytes,
+        {{c3_cb_index, cb_data_format}})
+        .set_page_size(c3_cb_index, tile_size_bytes);
+auto cb_c3 = CreateCircularBuffer(program, core, cb_c3_config);
+
+// c_4: exp result
+constexpr uint32_t c4_cb_index = CBIndex::c_4;
+CircularBufferConfig cb_c4_config = CircularBufferConfig(
+        tile_size_bytes,
+        {{c4_cb_index, cb_data_format}})
+        .set_page_size(c4_cb_index, tile_size_bytes);
+auto cb_c4 = CreateCircularBuffer(program, core, cb_c4_config);
 
     constexpr uint32_t dst_cb_index = CBIndex::c_16;
     CircularBufferConfig cb_dst_config = CircularBufferConfig(
@@ -147,8 +157,6 @@ int main() {
     // create kernel
     std::vector<uint32_t> reader_compile_time_args;
     TensorAccessorArgs(*src0_dram_buffer).append_to(reader_compile_time_args);
-    TensorAccessorArgs(*max_dram_buffer).append_to(reader_compile_time_args);
-    TensorAccessorArgs(*sum_dram_buffer).append_to(reader_compile_time_args);
     KernelHandle unary_reader_kernel_id = CreateKernel(
             program,
             "kernels/read_tile.cpp",
@@ -185,15 +193,9 @@ int main() {
     // write
     distributed::EnqueueWriteMeshBuffer(cq, src0_dram_buffer, input, false);
 
-    std::vector<bfloat16> max_data(32*32, bfloat16(1.0f));
-    distributed::EnqueueWriteMeshBuffer(cq, max_dram_buffer, max_data, false);
-
-    std::vector<bfloat16> sum_data(32*32, bfloat16(1.0f));
-    distributed::EnqueueWriteMeshBuffer(cq, sum_dram_buffer, sum_data, false);
-
     // set up the runtime arguments
     SetRuntimeArgs(program, eltwise_sfpu_kernel_id, core, {n_tiles});
-    SetRuntimeArgs(program, unary_reader_kernel_id, core, {src0_dram_buffer->address(), max_dram_buffer->address(), sum_dram_buffer->address(), n_tiles});
+    SetRuntimeArgs(program, unary_reader_kernel_id, core, {src0_dram_buffer->address(), n_tiles});
     SetRuntimeArgs(program, unary_writer_kernel_id, core, {dst_dram_buffer->address(), n_tiles});
 
     // launch
