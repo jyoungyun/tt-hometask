@@ -5,8 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(TT_METAL_HOME "${CMAKE_SOURCE_DIR}/tt-metal")
-set(TT_METAL_BUILD "${TT_METAL_HOME}/build")
+set(TT_METAL_HOME "${CMAKE_SOURCE_DIR}")
 
 # Common include roots
 set(TT_METAL_INCLUDE_DIRS
@@ -29,10 +28,6 @@ target_compile_options(tt_softmax_cpu PRIVATE
 
 target_include_directories(tt_softmax_cpu PRIVATE
     ${TT_METAL_INCLUDE_DIRS}
-)
-
-target_link_directories(tt_softmax_cpu PRIVATE
-    ${TT_METAL_BUILD}/lib
 )
 
 target_link_libraries(tt_softmax_cpu PRIVATE

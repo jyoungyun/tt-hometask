@@ -37,26 +37,27 @@ std::vector<bfloat16> exp_reference(const std::vector<bfloat16>& input) {
     return output;
 }
 
-std::vector<float> softmax_reference(const std::vector<float>& input) {
-    std::vector<float> output(input.size());
+std::vector<bfloat16> softmax_reference(const std::vector<bfloat16>& input) {
+    std::vector<float> foutput(input.size());
+    std::vector<bfloat16> output(input.size());
 
     for (size_t row = 0; row < kRows; ++row) {
         int base = row * kCols;
 
-        float max_val = input[base];
+        float max_val = static_cast<float>(input[base]);
         for (size_t col = 1; col < kCols; ++col) {
-            max_val = std::max(max_val, input[base+col]);
+            max_val = std::max(max_val, static_cast<float>(input[base+col]));
         }
 
         float sum = 0.f;
         for (size_t col = 0; col < kCols; ++col) {
-            float e = std::exp(input[base+col] - max_val);
-            output[base + col] = e;
+            float e = std::exp(static_cast<float>(input[base+col]) - max_val);
+            foutput[base + col] = e;
             sum += e;
         }
 
         for (size_t col = 0; col < kCols; ++col) {
-            output[base + col] /= sum;
+            output[base + col] = bfloat16(foutput[base + col] / sum);
         }
     }
 
@@ -92,17 +93,25 @@ int main() {
     constexpr CoreCoord core = {0,0};
     // TODO: dual core
     const uint32_t n_tiles = 1;
-    const uint32_t tile_size_bytes = sizeof(bfloat16) * 32 * 32;
+    const uint32_t tile_size_bytes = sizeof(bfloat16) * kRows * 32;
 
     // create dram buffer
     distributed::DeviceLocalBufferConfig dram_config{
         .page_size = tile_size_bytes,
         .buffer_type = tt::tt_metal::BufferType::DRAM
     };
+    distributed::ReplicatedBufferConfig max_buffer_config{
+        .size = n_tiles * tile_size_bytes
+    };
+    distributed::ReplicatedBufferConfig sum_buffer_config{
+        .size = n_tiles * tile_size_bytes
+    };
     distributed::ReplicatedBufferConfig buffer_config{
         .size = n_tiles * tile_size_bytes
     };
     auto src0_dram_buffer = distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
+    auto max_dram_buffer = distributed::MeshBuffer::create(max_buffer_config, dram_config, mesh_device.get());
+    auto sum_dram_buffer = distributed::MeshBuffer::create(sum_buffer_config, dram_config, mesh_device.get());
     auto dst_dram_buffer = distributed::MeshBuffer::create(buffer_config, dram_config, mesh_device.get());
 
     // create circular buffers
@@ -114,6 +123,20 @@ int main() {
             .set_page_size(src0_cb_index, tile_size_bytes);
     auto cb_src = CreateCircularBuffer(program, core, cb_src0_config);
 
+    constexpr uint32_t max_cb_index = CBIndex::c_1;
+    CircularBufferConfig cb_max_config = CircularBufferConfig(
+            n_tiles * tile_size_bytes,
+            {{max_cb_index, cb_data_format}})
+            .set_page_size(max_cb_index, tile_size_bytes);
+    auto cb_max = CreateCircularBuffer(program, core, cb_max_config);
+
+    constexpr uint32_t sum_cb_index = CBIndex::c_2;
+    CircularBufferConfig cb_sum_config = CircularBufferConfig(
+            n_tiles * tile_size_bytes,
+            {{sum_cb_index, cb_data_format}})
+            .set_page_size(sum_cb_index, tile_size_bytes);
+    auto cb_sum = CreateCircularBuffer(program, core, cb_sum_config);
+
     constexpr uint32_t dst_cb_index = CBIndex::c_16;
     CircularBufferConfig cb_dst_config = CircularBufferConfig(
             n_tiles * tile_size_bytes,
@@ -124,6 +147,8 @@ int main() {
     // create kernel
     std::vector<uint32_t> reader_compile_time_args;
     TensorAccessorArgs(*src0_dram_buffer).append_to(reader_compile_time_args);
+    TensorAccessorArgs(*max_dram_buffer).append_to(reader_compile_time_args);
+    TensorAccessorArgs(*sum_dram_buffer).append_to(reader_compile_time_args);
     KernelHandle unary_reader_kernel_id = CreateKernel(
             program,
             "kernels/read_tile.cpp",
@@ -155,14 +180,20 @@ int main() {
 
     // initialize input data and golden data
     auto input = make_input();
-    auto golden = exp_reference(input);
+    auto golden = softmax_reference(input);
 
     // write
     distributed::EnqueueWriteMeshBuffer(cq, src0_dram_buffer, input, false);
 
+    std::vector<bfloat16> max_data(32*32, bfloat16(1.0f));
+    distributed::EnqueueWriteMeshBuffer(cq, max_dram_buffer, max_data, false);
+
+    std::vector<bfloat16> sum_data(32*32, bfloat16(1.0f));
+    distributed::EnqueueWriteMeshBuffer(cq, sum_dram_buffer, sum_data, false);
+
     // set up the runtime arguments
     SetRuntimeArgs(program, eltwise_sfpu_kernel_id, core, {n_tiles});
-    SetRuntimeArgs(program, unary_reader_kernel_id, core, {src0_dram_buffer->address(), n_tiles});
+    SetRuntimeArgs(program, unary_reader_kernel_id, core, {src0_dram_buffer->address(), max_dram_buffer->address(), sum_dram_buffer->address(), n_tiles});
     SetRuntimeArgs(program, unary_writer_kernel_id, core, {dst_dram_buffer->address(), n_tiles});
 
     // launch
