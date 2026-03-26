@@ -14,23 +14,23 @@ set(TT_METAL_INCLUDE_DIRS
     /usr/include/metalium-thirdparty
 )
 
-add_executable(tt_softmax_cpu
+add_executable(tt_softmax
     src/main.cpp
 )
 
-target_compile_features(tt_softmax_cpu PRIVATE cxx_std_20)
-target_compile_options(tt_softmax_cpu PRIVATE
+target_compile_features(tt_softmax PRIVATE cxx_std_20)
+target_compile_options(tt_softmax PRIVATE
     -std=gnu++20
     -Wall
     -Wextra
     -O2
 )
 
-target_include_directories(tt_softmax_cpu PRIVATE
+target_include_directories(tt_softmax PRIVATE
     ${TT_METAL_INCLUDE_DIRS}
 )
 
-target_link_libraries(tt_softmax_cpu PRIVATE
+target_link_libraries(tt_softmax PRIVATE
     tt_metal
     device
     tt_stl
